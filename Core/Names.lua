@@ -48,9 +48,13 @@ function Names.Same(a, b)
     if a == b then return true end
     local la, lb = a:lower(), b:lower()
     if la == lb then return true end
+    la, lb = la:gsub("%s+", "-"), lb:gsub("%s+", "-")
+    if la == lb then return true end
     if not la:find("-", 1, true) or not lb:find("-", 1, true) then
         return Names.Base(la) == Names.Base(lb)
     end
+    -- one side carries an extra suffix ("first-last" vs "first-last-realm")
+    if la:sub(1, #lb + 1) == lb .. "-" or lb:sub(1, #la + 1) == la .. "-" then return true end
     return false
 end
 

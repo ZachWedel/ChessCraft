@@ -3,6 +3,11 @@
     Visual themes: "classic" (Staunton pieces, wood/green/slate boards) and
     "faction" (Alliance-blue white pieces vs Horde-crimson black pieces on
     a stone board, with the faction emblems from the game's own art).
+
+    Style rule: every window and feature keeps the classic WoW look set here
+    and in UI/Widgets.lua (gold-bordered dialog frames, red panel buttons,
+    Blizzard fonts, stock icons and sounds). Build new screens from these
+    constructors rather than introducing a new visual style.
 ]]
 
 local _, ns = ...
@@ -89,6 +94,43 @@ end
 
 function Theme.PieceTextureFor(side, pieceType)
     return Theme.PieceTexture(T.PIECE[side][pieceType])
+end
+
+-- In a bot game the bot's pieces come from its own set (light set when it
+-- plays White, dark set when it plays Black), unless turned off in Settings.
+function Theme.PieceTextureInGame(game, piece)
+    if game and game.mode == "bot" and ns.db.settings.botPieces ~= false then
+        local botSide = 3 - (game.localColor or 1)
+        if T.COLOR[piece] == botSide then
+            local bot = game.players[botSide]
+            local id = (bot and bot.botId) or (game.extra and game.extra.botId)
+            local persona = id and ns.Bots and ns.Bots.Get(id)
+            if persona then
+                return MEDIA .. "Pieces\\Bots\\" .. persona.id .. "\\" .. ((botSide == 1) and "w" or "b")
+                    .. LETTER[T.TYPE[piece]] .. ".tga"
+            end
+        end
+    end
+    return Theme.PieceTexture(piece)
+end
+
+-- Is this emblem's art in the client? (All of them are in 1.60.1; this keeps a
+-- future client without one of the atlases from showing an empty square.)
+function Theme.EmblemAvailable(em)
+    if em and em.atlas and C_Texture and C_Texture.GetAtlasInfo then
+        return C_Texture.GetAtlasInfo(em.atlas) ~= nil
+    end
+    return em ~= nil
+end
+
+-- Show a player-card emblem (chess piece, faction crest, class or race icon).
+function Theme.SetEmblem(tex, em)
+    if em and em.atlas and Theme.EmblemAvailable(em) then
+        tex:SetAtlas(em.atlas)
+    else
+        tex:SetTexture(Theme.PieceTextureFor(1, (em and em.piece) or 2))
+    end
+    tex:SetTexCoord(0, 1, 0, 1)
 end
 
 function Theme.Backdrop()

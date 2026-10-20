@@ -44,6 +44,7 @@ function MinimapButton:Create()
     icon:SetSize(20, 20)
     icon:SetPoint("CENTER", 0, 0)
     icon:SetTexture(Theme.ICON)
+    icon:SetTexCoord(0.1, 0.9, 0.1, 0.9) -- trim the square frame inside the round button
     b.icon = icon
 
     local border = b:CreateTexture(nil, "OVERLAY")

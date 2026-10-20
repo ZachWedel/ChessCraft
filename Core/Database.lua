@@ -21,11 +21,13 @@ local DEFAULT_SETTINGS = {
     showCoordinates = true,
     highlightLastMove = true,
     animateMoves = true,
+    botPieces = true,           -- bots play with their own piece sets
     autoQueen = false,
     confirmResign = true,
     sound = true,
     showQuips = true,
     acceptFrom = "everyone",    -- "everyone" | "friends" | "nobody"
+    allowSpectators = "everyone", -- who may watch your live games: "everyone" | "friends" | "nobody"
     botSpeed = "balanced",      -- "smooth" | "balanced" | "fast"
     pauseBotInCombat = true,
     autoFlip = true,            -- show the board from your side
@@ -51,6 +53,11 @@ local DEFAULT_CHAR = {
     lastBot = 3,
     lastColor = "random",
     lastTimeControl = "5+3",
+    profile = {           -- your player card (Profile/Profile.lua)
+        rating = 1200, games = 0, w = 0, l = 0, d = 0, peak = 1200,
+        title = "", motto = "", emblem = "knight", frame = "gold", backdrop = "wood",
+        rated = {},       -- live game ids already counted
+    },
 }
 
 local function copyDefaults(dst, src)

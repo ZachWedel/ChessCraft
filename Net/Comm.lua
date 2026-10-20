@@ -23,6 +23,8 @@ local SEP = Comm.SEP
 local MAX_AGE = 90            -- seconds a queued message may wait before being dropped
 local handlers = {}
 local queue = {}
+local lowQueue = {}           -- spectator traffic: sent only when game messages are out
+local LOW_PER_FLUSH = 2
 local recentWhispers = {}     -- lowercased target -> time of last send
 
 Comm.locked = false
@@ -60,6 +62,16 @@ end
 function Comm:Send(target, msgType, ...)
     if not target or target == "" then return false end
     return self:Enqueue("WHISPER", target, Comm.Encode(msgType, ...))
+end
+
+-- Whisper with low priority (spectator moves and chat): never delays the
+-- messages of a game in progress.
+function Comm:SendLow(target, msgType, ...)
+    if not target or target == "" then return false end
+    local text = Comm.Encode(msgType, ...)
+    if #text > 255 then return false end
+    lowQueue[#lowQueue + 1] = { channel = "WHISPER", target = target, text = text, added = now(), notBefore = 0 }
+    return true
 end
 
 -- Broadcast to "GUILD", "PARTY" or "RAID".
@@ -118,7 +130,22 @@ function Comm:Flush()
     end
 end
 
-function Comm:QueueSize() return #queue end
+function Comm:QueueSize() return #queue + #lowQueue end
+
+-- move a few low-priority messages to the main queue once it is empty
+function Comm:FlushLow()
+    if #queue > 0 or #lowQueue == 0 or self.locked then return end
+    local t = now()
+    local moved = 0
+    while #lowQueue > 0 and moved < LOW_PER_FLUSH do
+        local item = table.remove(lowQueue, 1)
+        if t - item.added <= MAX_AGE then
+            queue[#queue + 1] = item
+            moved = moved + 1
+        end
+    end
+    if moved > 0 then self:Flush() end
+end
 
 -- incoming ---------------------------------------------------------------------------
 local function onAddonMessage(_, prefix, text, channel, sender)
@@ -174,6 +201,7 @@ function Comm:OnEnable()
         if acc < 0.25 then return end
         acc = 0
         if #queue > 0 then Comm:Flush() end
+        Comm:FlushLow()
         if Comm.locked and #queue == 0 and not Compat.InChatLockdown() then Comm:SetLocked(false) end
     end)
 end

@@ -17,6 +17,7 @@ local TABS = {
     { key = "game", label = "Game" },
     { key = "play", label = "Play" },
     { key = "history", label = "History" },
+    { key = "profile", label = "Profile" },
     { key = "settings", label = "Settings" },
 }
 
@@ -37,9 +38,12 @@ function UI:Build()
     f:SetScript("OnDragStop", function(self)
         self:StopMovingOrSizing()
         UI:SavePosition()
+        if ns.SpectatorChat then ns.SpectatorChat.shiftedMain = nil end   -- the player placed it
     end)
     f:SetScript("OnShow", function()
         Compat.PlaySound("finish")
+        -- double-check who is online with Chess Craft every time the window opens
+        ns.Presence:Recheck()
         UI:RefreshTabs()
     end)
     f:SetScript("OnHide", function()
@@ -87,6 +91,7 @@ function UI:Build()
         game = ns.GameView:Build(content),
         play = ns.Lobby:Build(content),
         history = ns.History:Build(content),
+        profile = ns.ProfileTab:Build(content),
     }
     local settings = ns.SettingsUI.Build(content, CONTENT_W)
     settings.frame:SetPoint("TOPLEFT", 2, -4)
@@ -122,8 +127,9 @@ function UI:IsShown() return self.frame ~= nil and self.frame:IsShown() end
 function UI:Show(tab)
     self:Build()
     tab = tab or self.tab
-    if not tab or (tab == "game" and not ns.GameView:Game()) then
-        tab = ns.GameView:Game() and "game" or "play"
+    local onBoard = ns.GameView:Game() or ns.Challenge:PendingStart()
+    if not tab or (tab == "game" and not onBoard) then
+        tab = onBoard and "game" or "play"
     end
     self.frame:Show()
     self:ShowTab(tab)
@@ -254,8 +260,10 @@ local function toastOpen(key, title, text)
 end
 
 function UI:OnChallengeReceived(c)
+    local who = Names.Display(c.from)
+    if c.rating then who = who .. " (" .. ns.Rating.Format(c.rating, c.ratingGames) .. ")" end
     local text = string.format("%s challenges you to a game of chess.\n%s · you play %s.",
-        Names.Display(c.from), ns.Challenge.Describe(c.tc), Theme.Side(c.myColor).name)
+        who, ns.Challenge.Describe(c.tc), Theme.Side(c.myColor).name)
     ns.Dialogs:Show("challenge-" .. c.id, {
         title = "Chess challenge!",
         text = text,
@@ -263,7 +271,7 @@ function UI:OnChallengeReceived(c)
         timeout = 58,
         buttons = {
             { label = "Accept", onClick = function()
-                if ns.Challenge:Accept(c.id) then ns.Print("Accepted. Starting the game with %s...", Names.Display(c.from)) end
+                if ns.Challenge:Accept(c.id) then ns.Print("Accepted. The match with %s starts shortly...", Names.Display(c.from)) end
             end },
             { label = "Decline", onClick = function() ns.Challenge:Decline(c.id, "declined") end },
             { label = "Later", onClick = function() end },
@@ -305,7 +313,7 @@ function UI:OnInitialize()
     end)
     ns:On("GAME_CLOSED", function()
         ns.GameView:SetGame(ns.activeGame)
-        if UI.tab == "game" and not ns.GameView:Game() then UI:ShowTab("play") end
+        if UI.tab == "game" and not ns.GameView:Game() and not ns.Challenge:PendingStart() then UI:ShowTab("play") end
         ns.Lobby:Refresh()
         if ns.MinimapButton then ns.MinimapButton:UpdateAttention() end
     end)
@@ -334,12 +342,32 @@ function UI:OnInitialize()
         ns.Dialogs:Hide("challenge-" .. c.id)
         ns.Print("%s withdrew the challenge.", Names.Display(c.from))
     end)
+    -- sending or accepting a challenge takes you to the board to wait for the start
+    local function toBoard()
+        local g = ns.GameView:Game()
+        if ns.BotGame:IsActive() then
+            ns.Print("Your bot game was saved; resume it any time from the Play tab.")
+            ns.BotGame:SaveAndClose()
+        elseif g and (g.result or ns.GameView:Mode() == "review") then
+            if ns.Live.game == g then ns.Live:Close() end
+            if ns.BotGame.game == g then ns.BotGame:SaveAndClose() end
+        end
+        ns.GameView:SetGame(nil)
+        UI:Show("game")
+    end
+    ns:On("CHALLENGE_SENT", toBoard)
+    ns:On("CHALLENGE_ACCEPTED_LOCAL", toBoard)
+    ns:On("CHALLENGE_ACCEPTED", function()
+        if ns.GameView.frame and not ns.GameView:Game() then ns.GameView:Refresh() end
+        if not UI:IsShown() then UI:Show("game") end
+    end)
     ns:On("CHALLENGES_CHANGED", function()
         -- hide pop-ups for challenges that are gone or already answered
         for _, c in ipairs(ns.Challenge:ListIncoming()) do
             if c.state ~= "pending" then ns.Dialogs:Hide("challenge-" .. c.id) end
         end
         ns.Lobby:RefreshChallenges()
+        if ns.GameView.frame and not ns.GameView:Game() then ns.GameView:Refresh() end
         UI:RefreshTabs()
         if ns.MinimapButton then ns.MinimapButton:UpdateAttention() end
     end)
@@ -364,6 +392,14 @@ function UI:OnInitialize()
         UI:RefreshTabs()
     end)
     ns:On("SAVED_GAMES_CHANGED", function() ns.Lobby:RefreshSaved() end)
+    ns:On("PROFILE_CHANGED", function()
+        local gv = ns.GameView
+        if gv.frame and gv.game and gv:Mode() == "live" then
+            gv:RefreshPanel()
+            if gv.game.result then gv:ShowResultBanner() end
+        end
+        ns.Lobby:RefreshPlayers()
+    end)
     ns:On("NEWER_VERSION", function() ns.Lobby:RefreshChallenges() end)
     ns:On("SETTINGS_CHANGED", function(key)
         if not UI.frame then return end

@@ -46,8 +46,12 @@ function Lobby:Build(parent)
     self:BuildPlayers(f)
 
     f:SetScript("OnShow", function()
-        ns.Presence:Announce(false)
-        ns.Presence:PingFriends(false)
+        ns.Presence:Recheck()
+        -- fetch ratings for players nearby we don't know yet (or not lately)
+        for _, p in ipairs(ns.Presence:List()) do
+            local card = ns.Profile:Get(p.name)
+            if not card or ns.Clock.now() - (card.at or 0) > 300 then ns.Profile:Request(p.name) end
+        end
         Lobby:Refresh()
     end)
     return f
@@ -275,8 +279,8 @@ function Lobby:BuildPlayers(f)
     local pHeader = W.Label(f, "Chess Craft players nearby", "GameFontNormal")
     pHeader:SetPoint("TOPLEFT", RIGHT_X, -316)
     local refresh = W.FlatButton(f, "Refresh", 64, 18, function()
-        ns.Presence:Announce(true)
-        ns.Presence:PingFriends(true)
+        ns.Presence.recheckStarted = nil
+        ns.Presence:Recheck()
     end)
     refresh:SetPoint("TOPRIGHT", f, "TOPLEFT", RIGHT_X + RIGHT_W, -314)
     W.Tooltip(refresh, "Refresh", "Ask your guild, group and online friends who has Chess Craft.")
@@ -298,16 +302,24 @@ function Lobby:BuildPlayers(f)
         row.dot:SetTexture(Theme.DOT)
         row.text = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
         row.text:SetPoint("LEFT", row.dot, "RIGHT", 6, 0)
-        row.text:SetPoint("RIGHT", -96, 0)
+        row.text:SetPoint("RIGHT", -146, 0)
         row.text:SetJustifyH("LEFT")
         row.text:SetWordWrap(false)
+        row.card = W.FlatButton(row, "Card", 46, 20, function()
+            if row.playerName then ns.ProfileCard.ShowFor(row.playerName) end
+        end)
+        W.Tooltip(row.card, "Player card", "See this player's rating and card.")
         row.challenge = W.Button(row, "Challenge", 88, 20, function()
-            if row.playerName then
+            if not row.playerName then return end
+            if row.busy then
+                if ns.Spectate:Watch(row.playerName) then ns.UI:ShowTab("game") end
+            else
                 Lobby.nameBox:SetText(Names.Display(row.playerName))
                 Lobby:SendChallenge(row.playerName)
             end
         end)
         row.challenge:SetPoint("RIGHT", -2, 0)
+        row.card:SetPoint("RIGHT", row.challenge, "LEFT", -4, 0)
         row:SetScript("OnClick", function()
             if row.playerName then Lobby.nameBox:SetText(Names.Display(row.playerName)) end
         end)
@@ -318,11 +330,29 @@ function Lobby:BuildPlayers(f)
         if idle then row.dot:SetVertexColor(C.good[1], C.good[2], C.good[3], 1)
         else row.dot:SetVertexColor(C.warn[1], C.warn[2], C.warn[3], 1) end
         local where = ({ guild = "guild", group = "group", friend = "friend", reply = "guild", direct = "" })[p.source or ""] or ""
-        local status = idle and "" or (" " .. Theme.ColorText("(in a game)", C.warn))
-        local extra = (where ~= "") and dim(" · " .. where) or ""
-        row.text:SetText(Names.Display(p.name) .. extra .. status)
-        local ok = ns.Challenge:CanChallenge()
-        row.challenge:SetEnabled(ok and idle and p.proto == ns.PROTOCOL)
+        local card = ns.Profile:Get(p.name)
+        local rating = card and dim(" (" .. ns.Rating.Format(card.rating, card.games) .. ")") or ""
+        -- the status replaces where we found them: it's what matters in a busy row
+        local tag
+        if p.proto ~= ns.PROTOCOL then tag = dim(" · needs update")
+        elseif not idle then tag = dim(" · ") .. Theme.ColorText("in a match", C.warn)
+        elseif where ~= "" then tag = dim(" · " .. where)
+        else tag = "" end
+        row.text:SetText(Names.Display(p.name) .. rating .. tag)
+        -- players in a match can't be challenged, but their game can be watched
+        row.busy = not idle
+        if idle then
+            row.challenge:SetText("Challenge")
+            row.challenge:SetEnabled(ns.Challenge:CanChallenge() and p.proto == ns.PROTOCOL)
+            W.Tooltip(row.challenge, "Challenge", "Challenge this player with the time control and color chosen above.")
+        else
+            local hostOk = ns.Spectate.HostSupports(p.version)
+            row.challenge:SetText("Watch")
+            row.challenge:SetEnabled(ns.Spectate:CanWatch() and p.proto == ns.PROTOCOL and hostOk)
+            W.Tooltip(row.challenge, "Watch", hostOk and "This player is in a match. Watch it as a spectator."
+                or ("This player is in a match, but needs Chess Craft " .. ns.Spectate.MIN_HOST_VERSION
+                    .. " or later for it to be watched."))
+        end
     end)
     self.playerList:SetPoint("TOPLEFT", RIGHT_X, -336)
 
@@ -467,7 +497,9 @@ function Lobby:RefreshPlayers()
     if not self.frame then return end
     local list = ns.Presence:List()
     self.playerList:SetItems(list)
-    if #list == 0 then
+    if #list == 0 and ns.Presence:IsChecking() then
+        self.playersEmpty:SetText("Checking your guild, group and online friends for Chess Craft...")
+    elseif #list == 0 then
         self.playersEmpty:SetText("Nobody found yet. Guildmates, group members and online friends with Chess Craft show up here. You can always type a name above.")
     else
         self.playersEmpty:SetText("")

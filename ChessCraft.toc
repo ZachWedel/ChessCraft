@@ -2,7 +2,7 @@
 ## Title: Chess Craft
 ## Notes: Chess for World of Warcraft: Forever. Challenge other players on the clock (or untimed), or take on eight Azeroth bots from Kobold to Archmage.
 ## Author: Chess Craft contributors
-## Version: 0.1.0
+## Version: 0.3.1
 ## Category: Minigames
 ## IconTexture: Interface\AddOns\ChessCraft\Media\Icon
 ## SavedVariables: ChessCraftDB
@@ -10,7 +10,7 @@
 ## AddonCompartmentFunc: ChessCraft_OnAddonCompartmentClick
 ## AddonCompartmentFuncOnEnter: ChessCraft_OnAddonCompartmentEnter
 ## AddonCompartmentFuncOnLeave: ChessCraft_OnAddonCompartmentLeave
-## X-Protocol: 1
+## X-Protocol: 2
 ## X-License: MIT (code); chess piece art by Colin M.L. Burnett, BSD license (see CREDITS.md)
 
 Core\Init.lua
@@ -31,8 +31,14 @@ Net\Comm.lua
 Net\Presence.lua
 Net\Challenge.lua
 Net\Live.lua
+Net\Spectate.lua
 
 Play\BotGame.lua
+
+Profile\Rating.lua
+Profile\WordFilterData.lua
+Profile\WordFilter.lua
+Profile\Profile.lua
 
 UI\Theme.lua
 UI\Widgets.lua
@@ -42,5 +48,9 @@ UI\GameView.lua
 UI\Lobby.lua
 UI\History.lua
 UI\Settings.lua
+UI\ProfileCard.lua
+UI\ProfileTab.lua
+UI\SpectatorChat.lua
+UI\EmblemPicker.lua
 UI\MainWindow.lua
 UI\Minimap.lua

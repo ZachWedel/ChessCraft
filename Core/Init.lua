@@ -9,8 +9,8 @@ local ADDON_NAME, ns = ...
 ns.ADDON_NAME = ADDON_NAME
 ns.TITLE = "Chess Craft"
 -- Bump PROTOCOL whenever the addon-message format changes incompatibly.
-ns.PROTOCOL = 1
-ns.version = "0.1.0"
+ns.PROTOCOL = 2
+ns.version = "0.3.1"
 
 do
     local getMeta = (C_AddOns and C_AddOns.GetAddOnMetadata) or GetAddOnMetadata
@@ -155,6 +155,7 @@ local function help()
     print("  /chess bot [1-8] - start a game against a bot")
     print("  /chess resume - resume your most recent bot game")
     print("  /chess challenge <name> [minutes+increment|infinite] - challenge a player")
+    print("  /chess watch <name> - watch a player's live game")
     print("  /chess options - settings")
     print("  /chess version - show version information")
 end
@@ -178,6 +179,12 @@ local function slash(input)
             ns.Print("Usage: /chess challenge <name> [5+3|infinite]")
         elseif ns.Challenge then
             ns.Challenge:SendTo(name, ns.Challenge.ParseTimeControl(tc), "random")
+        end
+    elseif cmd == "watch" or cmd == "spectate" then
+        if rest == "" then
+            ns.Print("Usage: /chess watch <name>")
+        elseif ns.Spectate and ns.Spectate:Watch(rest) and ns.UI then
+            ns.UI:Show("game")
         end
     elseif cmd == "options" or cmd == "settings" or cmd == "config" then
         if ns.UI and ns.UI.ShowTab then ns.UI:Show(); ns.UI:ShowTab("settings") end

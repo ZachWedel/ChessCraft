@@ -215,7 +215,8 @@ end
 function BoardView:BottomColor()
     local bottom = WHITE
     local g = self.game
-    if g and ns.db.settings.autoFlip and g.localColor == BLACK then bottom = BLACK end
+    local mine = g and g.localColor or self.idleColor
+    if mine and ns.db.settings.autoFlip and mine == BLACK then bottom = BLACK end
     if self.manualFlip then bottom = 3 - bottom end
     return bottom
 end
@@ -389,7 +390,7 @@ function BoardView:Refresh()
         local sq = self:SquareAt(slot.col, slot.row)
         local p = b and b.sq[sq] or 0
         if p ~= 0 and p ~= T.OFF and sq ~= dragFrom then
-            local tex = Theme.PieceTexture(p)
+            local tex = Theme.PieceTextureInGame(g, p)
             if slot.pieceTex ~= tex then
                 slot.piece:SetTexture(tex)
                 slot.pieceTex = tex
@@ -544,7 +545,7 @@ function BoardView:StartDrag()
     if not p or p == 0 then return end
     self.dragging = true
     self.dragFrom = from
-    self.dragTex:SetTexture(Theme.PieceTexture(p))
+    self.dragTex:SetTexture(Theme.PieceTextureInGame(g, p))
     self.dragTex:Show()
     local slot = self:SlotOf(from)
     slot.piece:Hide()

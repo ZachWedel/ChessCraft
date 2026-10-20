@@ -8,6 +8,11 @@
       HR~proto~version~status    whispered reply to HI
       PI~nonce                   direct ping (friends, "does X have the addon?")
       PO~nonce~proto~version~status
+      ST~proto~version~status    status change (idle <-> busy), whispered to every listed player
+
+    Only players whose addon has answered appear in the list. A reply to a
+    friends-list ping only counts when it comes from someone on our friends
+    list (a first-name-only whisper could reach a stranger).
 ]]
 
 local _, ns = ...
@@ -20,7 +25,9 @@ local ANNOUNCE_INTERVAL = 60
 local STATUS_GAP = 10
 local FRIEND_PING_INTERVAL = 120
 local STALE_AFTER = 15 * 60
-local MAX_FRIEND_PINGS = 25
+local MAX_FRIEND_PINGS = 40
+local RECHECK_GAP = 5
+local RECHECK_WINDOW = 8
 
 local function now() return ns.Clock.now() end
 
@@ -111,21 +118,98 @@ function Presence:Announce(force)
     end
 end
 
+-- Whisper targets for every friend who is online in this game: character
+-- friends and Battle.net friends playing WoW: Forever. Names are turned into
+-- whisper form ("First Surname" -> "First-Surname"); a Battle.net friend also
+-- gets a "Name-Realm" candidate, since the two lists format names differently.
+function Presence:OnlineFriendTargets()
+    local targets, seen = {}, {}
+    local function add(name)
+        if not name or name == "" or Compat.IsSecret(name) then return end
+        local target = Names.Normalize(name)
+        if target and not seen[target:lower()] and not Names.IsMe(target) then
+            seen[target:lower()] = true
+            targets[#targets + 1] = target
+        end
+    end
+    if C_FriendList and C_FriendList.GetNumFriends then
+        for i = 1, C_FriendList.GetNumFriends() or 0 do
+            local info = C_FriendList.GetFriendInfoByIndex(i)
+            if info and info.connected then add(info.name) end
+        end
+    end
+    if BNGetNumFriends and C_BattleNet and C_BattleNet.GetFriendNumGameAccounts then
+        local myProject = WOW_PROJECT_ID
+        for i = 1, (BNGetNumFriends()) or 0 do
+            for j = 1, C_BattleNet.GetFriendNumGameAccounts(i) or 0 do
+                local g = C_BattleNet.GetFriendGameAccountInfo(i, j)
+                if g and g.isOnline and g.clientProgram == (BNET_CLIENT_WOW or "WoW")
+                    and (not myProject or not g.wowProjectID or g.wowProjectID == myProject)
+                    and g.isInCurrentRegion ~= false and g.characterName then
+                    add(g.characterName)
+                    local realm = g.realmName
+                    if realm and realm ~= "" and not Compat.IsSecret(realm) and not g.characterName:find("-", 1, true) then
+                        add(g.characterName .. "-" .. realm:gsub("%s+", ""))
+                    end
+                end
+            end
+        end
+    end
+    return targets
+end
+
+-- force: ask every online friend; otherwise only friends not asked lately
+-- (e.g. someone who just logged in).
 function Presence:PingFriends(force)
-    if Compat.IsTrial() or not C_FriendList then return end
+    if Compat.IsTrial() then return end
     local t = now()
-    if not force and self.lastFriendPing and t - self.lastFriendPing < FRIEND_PING_INTERVAL then return end
-    self.lastFriendPing = t
+    self.friendPinged = self.friendPinged or {}
+    local targets = self:OnlineFriendTargets()
+    -- forget friends who went offline, so they are asked again when they return
+    local online = {}
+    for _, target in ipairs(targets) do online[target:lower()] = true end
+    for key in pairs(self.friendPinged) do
+        if not online[key] then self.friendPinged[key] = nil end
+    end
     local sent = 0
-    local n = C_FriendList.GetNumFriends and C_FriendList.GetNumFriends() or 0
-    for i = 1, n do
-        local info = C_FriendList.GetFriendInfoByIndex(i)
-        if info and info.connected and info.name and sent < MAX_FRIEND_PINGS then
-            Comm:Send(info.name, "PI", "f")
+    for _, target in ipairs(targets) do
+        if sent >= MAX_FRIEND_PINGS then break end
+        local last = self.friendPinged[target:lower()]
+        if force or not last or t - last >= FRIEND_PING_INTERVAL then
+            self.friendPinged[target:lower()] = t
+            Comm:Send(target, "PI", "f")
             sent = sent + 1
         end
     end
 end
+
+-- The "double check" run each time the window opens: ask the guild, group
+-- and every online friend who has Chess Craft, re-confirm everyone already
+-- listed, and drop listed players who don't answer within RECHECK_WINDOW.
+function Presence:Recheck()
+    if Compat.IsTrial() then return end
+    local t = now()
+    if self.recheckStarted and t - self.recheckStarted < RECHECK_GAP then return end
+    self.recheckStarted = t
+    self.checking = true
+    if C_FriendList and C_FriendList.ShowFriends then pcall(C_FriendList.ShowFriends) end
+    self:Announce(true)
+    self:PingFriends(true)
+    for name, p in pairs(self.players) do
+        if t - (p.seen or 0) < STALE_AFTER then Comm:Send(name, "PI", "v") end
+    end
+    ns:Fire("PRESENCE_CHANGED")
+    C_Timer.After(RECHECK_WINDOW, function()
+        if self.recheckStarted ~= t then return end
+        self.checking = false
+        for name, p in pairs(self.players) do
+            if (p.seen or 0) < t then self.players[name] = nil end -- no answer: gone
+        end
+        ns:Fire("PRESENCE_CHANGED")
+    end)
+end
+
+function Presence:IsChecking() return self.checking == true end
 
 -- Ask one player whether they have the addon; callback(found, info) within 6s.
 local pendingPings = {}
@@ -142,11 +226,32 @@ function Presence:Ping(name, callback)
     end)
 end
 
+-- Is this player one of our (character or Battle.net) friends?
+function Presence:IsFriend(name)
+    if C_FriendList and C_FriendList.GetFriendInfo then
+        local info = C_FriendList.GetFriendInfo(name) or C_FriendList.GetFriendInfo(Names.Base(name))
+        if info then return true end
+    end
+    for _, target in ipairs(self:OnlineFriendTargets()) do
+        if Names.Same(target, name) then return true end
+    end
+    return false
+end
+
+-- Is this player busy in a match (as far as we know)?
+function Presence:IsBusy(name)
+    local p = self:Get(name)
+    return p ~= nil and p.status == "busy" and now() - (p.seen or 0) < STALE_AFTER
+end
+
 -- Is this player someone we know (friend, guildmate, group member)?
 function Presence.IsKnown(name)
     if C_FriendList and C_FriendList.GetFriendInfo then
         local info = C_FriendList.GetFriendInfo(name) or C_FriendList.GetFriendInfo(Names.Base(name))
         if info then return true end
+    end
+    for _, target in ipairs(Presence:OnlineFriendTargets()) do
+        if Names.Same(target, name) then return true end
     end
     if UnitInParty and (UnitInParty(name) or UnitInParty(Names.Base(name))) then return true end
     if UnitInRaid and (UnitInRaid(name) or UnitInRaid(Names.Base(name))) then return true end
@@ -174,9 +279,15 @@ function Presence:OnEnable()
     Comm:Register("PI", function(sender, f)
         Comm:Send(sender, "PO", f[1] or "", ns.PROTOCOL, ns.version, self:MyStatus())
     end)
+    Comm:Register("ST", function(sender, f)
+        local p = self.players[sender]
+        if p then self:Seen(sender, f[2], f[1], f[3], p.source) end
+    end)
     Comm:Register("PO", function(sender, f)
         local nonce = f[1]
-        local source = (nonce == "f") and "friend" or "direct"
+        local known = self.players[sender]
+        if nonce == "f" and not known and not self:IsFriend(sender) then return end
+        local source = (nonce == "f") and "friend" or (nonce == "v" and known and known.source) or "direct"
         local p = self:Seen(sender, f[3], f[2], f[4], source)
         local pending = pendingPings[nonce]
         if pending then
@@ -185,7 +296,23 @@ function Presence:OnEnable()
         end
     end)
 
-    C_Timer.After(12, function() self:Announce(true) end)
+    C_Timer.After(12, function()
+        self:Announce(true)
+        self:PingFriends(true)
+    end)
+    -- friends coming online (or the friends list finishing loading)
+    local friendCheckQueued = false
+    local function friendsChanged()
+        if friendCheckQueued then return end
+        friendCheckQueued = true
+        C_Timer.After(3, function()
+            friendCheckQueued = false
+            self:PingFriends(false)
+        end)
+    end
+    ns:RegisterEvent("FRIENDLIST_UPDATE", friendsChanged)
+    ns:RegisterEvent("BN_FRIEND_ACCOUNT_ONLINE", friendsChanged)
+    ns:RegisterEvent("BN_FRIEND_INFO_CHANGED", friendsChanged)
     local lastGroupAnnounce = 0
     ns:RegisterEvent("GROUP_ROSTER_UPDATE", function()
         if now() - lastGroupAnnounce > 30 then
@@ -194,7 +321,14 @@ function Presence:OnEnable()
         end
     end)
     ns:On("LIVE_STATE_CHANGED", function()
-        -- let guildmates know when we become busy/free (rate limited)
+        -- tell everyone who lists us that we are now busy / free again
+        local status = self:MyStatus()
+        if status ~= self.lastPushed then
+            self.lastPushed = status
+            for name in pairs(self.players) do
+                Comm:Send(name, "ST", ns.PROTOCOL, ns.version, status)
+            end
+        end
         self:Announce(false)
     end)
 end

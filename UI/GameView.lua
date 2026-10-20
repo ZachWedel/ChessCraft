@@ -100,6 +100,11 @@ local function createCard(parent)
 
     card.badge = card:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
     card.badge:SetPoint("RIGHT", -12, 0)
+    -- click a player to see their card
+    card:EnableMouse(true)
+    card:SetScript("OnMouseUp", function(self, button)
+        if button == "LeftButton" and self.playerName then ns.ProfileCard.ShowFor(self.playerName) end
+    end)
     return card
 end
 
@@ -163,6 +168,15 @@ function GameView:Build(parent)
     banner.btn2:SetPoint("RIGHT", -8, 0)
     banner.btn1 = W.Button(banner, "", 62, 20)
     banner.btn1:SetPoint("RIGHT", banner.btn2, "LEFT", -4, 0)
+    banner:EnableMouse(true)
+    W.Tooltip(banner, "Watching this game", function()
+        local mode = GameView:Mode()
+        local names = (mode == "spectate") and (ns.Spectate.spectators or {}) or ns.Spectate:WatcherNames()
+        if #names == 0 then return { "Nobody is watching." } end
+        local out = {}
+        for _, n in ipairs(names) do out[#out + 1] = Names.Display(n) end
+        return out
+    end)
     self.banner = banner
 
     -- navigation row
@@ -249,8 +263,14 @@ function GameView:Build(parent)
     empty.text = W.Label(empty, "No game in progress.\n\nPick a bot or challenge a player on the Play tab.", "GameFontHighlight", "CENTER")
     empty.text:SetPoint("CENTER", 0, 40)
     empty.text:SetWidth(290)
+    empty.title = W.Label(empty, "", "GameFontNormalLarge", "CENTER")
+    empty.title:SetPoint("BOTTOM", empty.text, "TOP", 0, 14)
+    empty.title:SetWidth(290)
     empty.play = W.Button(empty, "Go to Play", 140, 24, function() ns.UI:ShowTab("play") end)
     empty.play:SetPoint("TOP", empty.text, "BOTTOM", 0, -16)
+    empty.cancel = W.Button(empty, "Cancel challenge", 140, 24, function() ns.Challenge:Cancel() end)
+    empty.cancel:SetPoint("TOP", empty.play, "BOTTOM", 0, -8)
+    empty.cancel:Hide()
     self.empty = empty
 
     f:SetScript("OnUpdate", function(_, elapsed) GameView:OnUpdate(elapsed) end)
@@ -266,6 +286,7 @@ function GameView:Mode()
     if not g then return nil end
     if ns.Live and ns.Live.game == g then return "live" end
     if ns.BotGame and ns.BotGame.game == g then return "bot" end
+    if ns.Spectate and ns.Spectate.game == g then return "spectate" end
     return "review"
 end
 
@@ -368,9 +389,76 @@ function GameView:Refresh()
     local g = self.game
     self.empty:SetShown(g == nil)
     self.panel:SetShown(g ~= nil)
-    self.view.frame:SetAlpha(g and 1 or 0.55)
+    self.pending = (g == nil) and ns.Challenge:PendingStart() or nil
+    local joining = (g == nil) and ns.Spectate:PendingInfo() or nil
+    if joining and not self.pending then
+        self.pending = { role = "spectator", name = joining.name }
+    end
+    local idle = self.pending and self.pending.myColor or nil
+    if self.view.idleColor ~= idle then
+        self.view.idleColor = idle
+        self.view.skinKey = nil
+    end
+    self.view:UpdateOrientation()
+    self.view.frame:SetAlpha((g or self.pending) and 1 or 0.55)
     self.view:Refresh()
-    if g then self:RefreshPanel() end
+    if g then
+        self:RefreshPanel()
+    else
+        self:UpdatePending()
+    end
+end
+
+-- No game yet: a challenge we sent, or one we accepted, is being set up.
+function GameView:UpdatePending()
+    local e = self.empty
+    local p = self.pending
+    if not p then
+        self.view:HideBanner()
+        e.title:SetText("")
+        local last = ns.Challenge.lastOutcome
+        if ns.Spectate.lastOutcome then
+            e.text:SetText(ns.Spectate.lastOutcome .. "\n\nPick a bot or challenge a player on the Play tab.")
+        elseif last and now() - last.at < 300 then
+            e.text:SetText(last.text .. "\n\nChallenge someone else, or pick a bot, on the Play tab.")
+        else
+            e.text:SetText("No game in progress.\n\nPick a bot or challenge a player on the Play tab.")
+        end
+        e.play:Show()
+        e.cancel:Hide()
+        return
+    end
+    local name = Names.Display(p.name)
+    if p.role == "spectator" then
+        e.play:Hide()
+        e.cancel:Hide()
+        e.title:SetText("Joining as a spectator")
+        e.text:SetText("Asking " .. name .. " to let you watch their game...")
+        self.view:ShowBanner("Joining " .. name .. "'s game", "You'll see the board as soon as they answer.", C.gold)
+        return
+    end
+    local tc = ns.Challenge.Describe(p.tc)
+    local side = Theme.Side(p.myColor).name
+    e.play:Hide()
+    if p.role == "challenger" and p.state ~= "starting" then
+        e.title:SetText("Challenge sent")
+        local seen = (p.state == "seen") and (name .. " has your challenge and is deciding.")
+            or ("Waiting for " .. name .. " to answer...")
+        e.text:SetText(seen .. "\n\n" .. tc .. " · you play " .. side .. ".")
+        e.cancel:Show()
+        self.view:ShowBanner("Waiting for " .. name, "The game starts as soon as they accept.", C.gold)
+    elseif p.role == "challenger" then
+        local left = math.max(0, math.ceil((p.startAt or now()) - now()))
+        e.title:SetText(Theme.ColorText("Challenge accepted!", C.good))
+        e.text:SetText(name .. " accepted your challenge.\n\n" .. tc .. " · you play " .. side .. ".")
+        e.cancel:Hide()
+        self.view:ShowBanner(name .. " accepted!", left > 0 and ("The match starts in " .. left .. "...") or "Starting...", C.good)
+    else
+        e.title:SetText(Theme.ColorText("Challenge accepted", C.good))
+        e.text:SetText("You accepted " .. name .. "'s challenge.\n\n" .. tc .. " · you play " .. side .. ".")
+        e.cancel:Hide()
+        self.view:ShowBanner("Get ready!", "The match with " .. name .. " starts shortly...", C.good)
+    end
 end
 
 function GameView:RefreshPanel()
@@ -415,10 +503,18 @@ function GameView:UpdateCard(card, g, side, b)
     local subParts = {}
     if bot then
         subParts[#subParts + 1] = string.format("Level %d bot, ~%d", bot.level, bot.rating)
-    elseif side == g.localColor and self:Mode() ~= "review" then
+    elseif side == g.localColor and self:Mode() ~= "review" and self:Mode() ~= "spectate" then
         subParts[#subParts + 1] = "You"
     end
     subParts[#subParts + 1] = s.name
+    card.playerName = nil
+    local mode = self:Mode()
+    if not bot and (mode == "live" or mode == "spectate") then
+        local p = g.players[side]
+        card.playerName = p and p.name
+        local pc = card.playerName and ns.Profile:Get(card.playerName)
+        if pc then subParts[#subParts + 1] = ns.Rating.Format(pc.rating, pc.games) end
+    end
     card.sub:SetText(table.concat(subParts, " · "))
 
     -- portrait: bot persona icon, otherwise the side's king or faction emblem
@@ -450,7 +546,7 @@ function GameView:UpdateCard(card, g, side, b)
         if prevType and pt ~= prevType then x = x + 5 end
         t:ClearAllPoints()
         t:SetPoint("BOTTOMLEFT", card, "BOTTOMLEFT", 58 + x, 7)
-        t:SetTexture(Theme.PieceTexture(piece))
+        t:SetTexture(Theme.PieceTextureInGame(g, piece))
         t:Show()
         x = x + 9
         prevType = pt
@@ -473,14 +569,19 @@ function GameView:UpdateCard(card, g, side, b)
 
     -- clock or a badge
     card.side = side
+    local nameW = 150
     if g.tc then
         card.clock:Show()
         card.badge:SetText("")
     else
         card.clock:Hide()
         local mode = self:Mode()
-        card.badge:SetText((mode == "live") and "Untimed" or "")
+        local badge = (mode == "live" or mode == "spectate") and "Untimed" or ""
+        card.badge:SetText(badge)
+        nameW = (badge ~= "") and 180 or 235      -- long bot names fit when there's no clock
     end
+    card.name:SetWidth(nameW)
+    card.sub:SetWidth(nameW)
 end
 
 function GameView:UpdateClocks()
@@ -664,9 +765,19 @@ function GameView:UpdateBanner()
     elseif mode == "bot" then
         local bot = persona(g, opp)
         info = bot and bot.blurb or ""
+    elseif mode == "spectate" then
+        local n = #(ns.Spectate.spectators or {})
+        info = "Spectating" .. (g.tc and (" · " .. ns.Challenge.Describe(g.tc)) or " · untimed") ..
+            (n > 0 and string.format(" · %d watching", n) or "") .. " · the players can't see the spectator chat"
     else
         info = (g.tc and ns.Challenge.Describe(g.tc) or "Untimed game") ..
             (g.tc and "" or " · progress is saved; finish it any time you are both online")
+    end
+    if mode == "live" then
+        local watchers = ns.Spectate:WatcherNames()
+        if #watchers > 0 then
+            info = info .. string.format(" · %d watching", #watchers)
+        end
     end
     self:SetBanner(nil, colorize(info, C.dim))
 end
@@ -677,6 +788,14 @@ function GameView:StatusText()
     local mode = self:Mode()
     local opp = 3 - g.localColor
     local oppName = playerName(g, opp)
+    if g.result and mode == "spectate" then
+        return colorize("Game over. ", C.gold) .. (g:ResultText() or "")
+    end
+    if mode == "spectate" then
+        local viewingS = self.view:IsViewingHistory() and
+            string.format(" (viewing move %d of %d)", self.view:ViewedPly(), g:Ply()) or ""
+        return playerName(g, g.board.side) .. " to move." .. viewingS
+    end
     if g.result then
         local outcome = (mode == "review" and g.reviewOf) and g.reviewOf.outcome or g:Outcome(g.localColor)
         local text = g:ResultText() or ""
@@ -779,6 +898,13 @@ function GameView:ActionList()
                 end, true, "An untimed game stays open until you finish it or leave it.")
             end
         end
+    elseif mode == "spectate" then
+        add("Chat", function() ns.SpectatorChat:Toggle() end, true, "Talk with the other spectators. The players can't see it.")
+        if g.result then
+            add("Close", function() ns.Spectate:Stop() end)
+        else
+            add("Stop watching", function() ns.Spectate:Stop() end)
+        end
     else
         add("Close", function() self:CloseReview() end)
     end
@@ -826,13 +952,26 @@ end
 function GameView:ShowResultBanner()
     local g = self.game
     if not g or not g.result or not self.frame then return end
+    if self:Mode() == "spectate" then
+        local title = "Draw"
+        if g.result == "1-0" then title = playerName(g, 1) .. " wins"
+        elseif g.result == "0-1" then title = playerName(g, 2) .. " wins"
+        elseif g.result == "*" then title = "Game aborted" end
+        self.view:ShowBanner(title, g:ResultText() or "", C.gold)
+        return
+    end
     local outcome = (self:Mode() == "review" and g.reviewOf) and g.reviewOf.outcome or g:Outcome(g.localColor)
     local title, color
     if outcome == "win" then title, color = "Victory!", C.good
     elseif outcome == "loss" then title, color = "Defeat", C.bad
     elseif outcome == "draw" then title, color = "Draw", C.gold
     else title, color = "Game aborted", C.dim end
-    self.view:ShowBanner(title, g:ResultText(), color)
+    local sub = g:ResultText() or ""
+    local change = g.extra and g.extra.ratingChange
+    if change and self:Mode() == "live" then
+        sub = sub .. string.format("  ·  Rating %d (%s%d)", ns.Profile:Data().rating, change >= 0 and "+" or "", change)
+    end
+    self.view:ShowBanner(title, sub, color)
 end
 
 function GameView:OnGameUpdated(g, info)
@@ -867,7 +1006,10 @@ function GameView:OnUpdate(elapsed)
     if self.tick < 0.1 then return end
     self.tick = 0
     local g = self.game
-    if not g then return end
+    if not g then
+        if self.pending then self:UpdatePending() end
+        return
+    end
     if g.tc then self:UpdateClocks() end
     local mode = self:Mode()
     -- refresh the status line (thinking dots) and time-based messages twice a second
